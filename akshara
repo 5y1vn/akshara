@@ -73,8 +73,29 @@ class colors:
         lightgrey = '\033[47m'
 
 
+def _logger(msg, level=None):
+    level = level if level else 'info'
+    globals()[level](msg)
+
+
+def check_exec(cmd, level=None):
+    if not shutil.which(cmd):
+        if level == "error":
+            _logger("Required command: {} not found!".format(cmd),
+                    level="error")
+            exit()
+        else:
+            _logger("Command: {} not found.".format(cmd),
+                    level="warn")
+
+
 def exec(*cmd, **kwargs):
-    return subprocess.call(cmd, shell=False, stdout=sys.stdout, stderr=sys.stderr, **kwargs)
+    level = kwargs['level'] if 'level' in kwargs else None
+    check = kwargs['check'] if 'check' in kwargs else False
+    if check:
+        check_exec(cmd[0], level=level)
+    return subprocess.call(cmd, shell=False, stdout=sys.stdout,
+                           stderr=sys.stderr, **kwargs)
 
 
 def exec_chroot(*cmd, **kwargs):
@@ -215,7 +236,7 @@ def update_system():
             packages += blend_release.get('packages')
 
         if type(blend_release.get('aur-packages')) == list:
-            packages += ['fakeroot', 'paru']
+            packages += ['fakeroot']
             aur_packages += blend_release.get('aur-packages')
 
         if type(blend_release.get('services')) == list:
@@ -306,6 +327,9 @@ Server = {package_repo["repo-url"]}
             while True:
                 exec_chroot('useradd', '-m', '-G', 'wheel', '-s', '/bin/bash', 'aur')
                 exec_chroot('bash', '-c', 'echo "aur ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/aur')
+                exec_chroot(
+                    'runuser', '-u', 'aur', '--', 
+                    'git', 'clone', 'https://aur.archlinux.org/paru-git.git', '&&', 'cd', 'paru', '&&', 'makepkg -si')
                 return_val = exec_chroot(
                     'runuser', '-u', 'aur', '--', 'paru', '-Sy', '--noconfirm', '--needed',
                     '--noprogressbar', '--skipreview', '--removemake', '--cleanafter', '--ask=4',
@@ -417,7 +441,7 @@ Server = {package_repo["repo-url"]}
                 if f not in new_boot_files:
                     exec('rm', '-f', f'/boot/{f}')
 
-        exec('grub-mkconfig', '-o', '/boot/grub/grub.cfg')
+        exec('grub-mkconfig', '-o', '/boot/grub/grub.cfg', check=True)
 
         exec('touch', '/.update')
 
@@ -431,64 +455,69 @@ def daemon():
             exec('rm', '-rf', '/' + dir)
 
 
-description = f'''
-{colors.bold}{colors.fg.cyan}usage:{colors.reset}
-  {os.path.basename(sys.argv[0])} [command] [options] [arguments]
 
-{colors.bold}{colors.fg.cyan}version:{colors.reset} {__version}{colors.bold}
+def main():
+    description = f'''
+    {colors.bold}{colors.fg.cyan}usage:{colors.reset}
+    {os.path.basename(sys.argv[0])} [command] [options] [arguments]
 
-{colors.bold}{colors.fg.cyan}available commands{colors.reset}:
-  {colors.bold}help{colors.reset}                  Show this help message and exit.
-  {colors.bold}update{colors.reset}                Update your blendOS system.
-  {colors.bold}version{colors.reset}               Show version information and exit.
+    {colors.bold}{colors.fg.cyan}version:{colors.reset} {__version}{colors.bold}
 
-{colors.bold}{colors.fg.cyan}options for commands{colors.reset}:
-  {colors.bold}-v, --version{colors.reset}         show version information and exit
-'''
+    {colors.bold}{colors.fg.cyan}available commands{colors.reset}:
+    {colors.bold}help{colors.reset}                  Show this help message and exit.
+    {colors.bold}update{colors.reset}                Update your blendOS system.
+    {colors.bold}version{colors.reset}               Show version information and exit.
 
-epilog = f'''
-{colors.bold}Made with {colors.fg.red}\u2764{colors.reset}{colors.bold} by Rudra Saraswat.{colors.reset}
-'''
+    {colors.bold}{colors.fg.cyan}options for commands{colors.reset}:
+    {colors.bold}-v, --version{colors.reset}         show version information and exit
+    '''
 
-parser = argparse.ArgumentParser(description=description, usage=argparse.SUPPRESS,
-                                 epilog=epilog, formatter_class=argparse.RawTextHelpFormatter)
-command_map = {'help': 'help',
-               'version': 'version',
-               'update': update_system,
-               'daemon': daemon}
-parser.add_argument('command', choices=command_map.keys(),
-                    help=argparse.SUPPRESS)
-parser.add_argument('pkg', action='store', type=str,
-                    nargs='*', help=argparse.SUPPRESS)
-parser.add_argument('--headless',
-                    action='store_true', help=argparse.SUPPRESS)
-parser.add_argument('-v', '--version', action='version',
-                    version=f'%(prog)s {__version}', help=argparse.SUPPRESS)
+    epilog = f'''
+    {colors.bold}Made with {colors.fg.red}\u2764{colors.reset}{colors.bold} by Rudra Saraswat.{colors.reset}
+    '''
 
-if len(sys.argv) == 1:
-    parser.print_help()
-    exit()
+    parser = argparse.ArgumentParser(description=description, usage=argparse.SUPPRESS,
+                                    epilog=epilog, formatter_class=argparse.RawTextHelpFormatter)
+    command_map = {'help': 'help',
+                'version': 'version',
+                'update': update_system,
+                'daemon': daemon}
+    parser.add_argument('command', choices=command_map.keys(),
+                        help=argparse.SUPPRESS)
+    parser.add_argument('pkg', action='store', type=str,
+                        nargs='*', help=argparse.SUPPRESS)
+    parser.add_argument('--headless',
+                        action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('-v', '--version', action='version',
+                        version=f'%(prog)s {__version}', help=argparse.SUPPRESS)
 
-if os.geteuid() != 0 and not sys.argv[1] in ('help', 'version', '-v', '--version'):
-    error('requires root')
-    exit(1)
-
-args = parser.parse_intermixed_args()
-
-command = command_map[args.command]
-
-try:
-    if command == 'help':
+    if len(sys.argv) == 1:
         parser.print_help()
-    elif command == 'version':
-        parser.parse_args(['--version'])
-    elif command == update_system:
-        exec('touch', '/var/lib/.akshara-system-lock')
-        system_lock = fasteners.InterProcessLock('/var/lib/.akshara-system-lock')
-        info('attempting to acquire system lock')
-        with system_lock:
+        exit()
+
+    if os.geteuid() != 0 and not sys.argv[1] in ('help', 'version', '-v', '--version'):
+        error('requires root')
+        exit(1)
+
+    args = parser.parse_intermixed_args()
+
+    command = command_map[args.command]
+
+    try:
+        if command == 'help':
+            parser.print_help()
+        elif command == 'version':
+            parser.parse_args(['--version'])
+        elif command == update_system:
+            exec('touch', '/var/lib/.akshara-system-lock')
+            system_lock = fasteners.InterProcessLock('/var/lib/.akshara-system-lock')
+            info('attempting to acquire system lock')
+            with system_lock:
+                command()
+        else:
             command()
-    else:
-        command()
-except KeyboardInterrupt:
-    error('aborting')
+    except KeyboardInterrupt:
+        error('aborting')
+
+if __name__ == '__main__':
+    main()
