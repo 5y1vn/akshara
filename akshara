@@ -90,17 +90,21 @@ def check_exec(cmd, level=None):
 
 
 def exec(*cmd, **kwargs):
-    level = kwargs['level'] if 'level' in kwargs else None
-    check = kwargs['check'] if 'check' in kwargs else False
+    level = kwargs.pop('level') if 'level' in kwargs else None
+    check = kwargs.pop('check') if 'check' in kwargs else False
     if check:
+        info('check called with cmd: {}'.format(cmd[0]))
         check_exec(cmd[0], level=level)
+    debug('calling cmds: {} kwargs: {}'.format(cmd, kwargs))
     return subprocess.call(cmd, shell=False, stdout=sys.stdout,
                            stderr=sys.stderr, **kwargs)
 
 
 def exec_chroot(*cmd, **kwargs):
+    debug('calling cmds: {} kwargs: {}'.format(cmd, kwargs))
     exec('mount', '--bind', '/.new_rootfs', '/.new_rootfs')
     ret = exec('arch-chroot', '/.new_rootfs', *cmd, **kwargs)
+    debug('Chroot return: {} cmd: {} kwargs: {}'.format(ret, cmd, kwargs))
     exec('umount', '-l', '/.new_rootfs')
     return ret
 
@@ -121,6 +125,12 @@ def warn(warning):
 def error(err):
     print(colors.bold + fg.red + '[ERROR] ' +
           colors.reset + err + colors.reset)
+
+
+def debug(err):
+    if os.environ.get('AKSHARA_DEBUG'):
+        print(colors.bold + fg.red + '[DEBUG] ' +
+              colors.reset + err + colors.reset)
 
 
 def interpret_track(blend_release):
@@ -202,6 +212,8 @@ def update_system():
         exec('rm', '-f', '/.new_rootfs/pkglist.x86_64.txt')
         exec('rm', '-f', '/.new_rootfs/version')
 
+        debug('Setting up package installer...')
+
         packages = [
             'akshara',
             'blend'
@@ -236,7 +248,7 @@ def update_system():
             packages += blend_release.get('packages')
 
         if type(blend_release.get('aur-packages')) == list:
-            packages += ['fakeroot']
+            packages += ['fakeroot', 'paru']
             aur_packages += blend_release.get('aur-packages')
 
         if type(blend_release.get('services')) == list:
@@ -245,21 +257,26 @@ def update_system():
         if type(blend_release.get('user-services')) == list:
             user_services += blend_release.get('user-services')
 
+        debug('Chroot...')
+
         exec_chroot('rm', '-f', '/.new_rootfs/etc/resolv.conf')
 
         with open('/.new_rootfs/etc/resolv.conf', 'w') as pacman_mirrorlist_conf:
             pacman_mirrorlist_conf.write('nameserver 1.1.1.1\n')
+
+        debug('mirrorlist...')
 
         with open('/.new_rootfs/etc/pacman.d/mirrorlist', 'w') as pacman_mirrorlist_conf:
             if type(blend_release.get('arch-repo')) == str:
                 pacman_mirrorlist_conf.write(f'Server = {blend_release.get("arch-repo")}/$repo/os/$arch\n')
             else:
                 pacman_mirrorlist_conf.write('Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n')
-
+        debug('finished mirrorlist...')
         exec_chroot('mkdir', '-p', '/var/cache/pacman/pkg')
+        debug('mkdir var/cache/pacman/pkg...')
         exec_chroot('rm', '-rf', '/var/cache/pacman/pkg')
         exec('cp', '-r', '/var/cache/pacman/pkg', '/.new_rootfs/var/cache/pacman')
-
+        debug('update pkgs...')
         # update packages
         exec_chroot('pacman-key', '--init')
         exec_chroot('pacman-key', '--populate')
@@ -321,19 +338,17 @@ Server = {package_repo["repo-url"]}
                 exit(50)
             if return_val == 0:
                 break
-        
+
         counter = 0
         if aur_packages != []:
             while True:
                 exec_chroot('useradd', '-m', '-G', 'wheel', '-s', '/bin/bash', 'aur')
                 exec_chroot('bash', '-c', 'echo "aur ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/aur')
-                exec_chroot(
-                    'runuser', '-u', 'aur', '--', 
-                    'git', 'clone', 'https://aur.archlinux.org/paru-git.git', '&&', 'cd', 'paru', '&&', 'makepkg -si')
                 return_val = exec_chroot(
                     'runuser', '-u', 'aur', '--', 'paru', '-Sy', '--noconfirm', '--needed',
                     '--noprogressbar', '--skipreview', '--removemake', '--cleanafter', '--ask=4',
                     *aur_packages)
+
                 exec_chroot('userdel', '-r', 'aur')
                 exec_chroot('rm', '-f', '/etc/sudoers.d/aur')
                 counter += 1
@@ -455,7 +470,6 @@ def daemon():
             exec('rm', '-rf', '/' + dir)
 
 
-
 def main():
     description = f'''
     {colors.bold}{colors.fg.cyan}usage:{colors.reset}
@@ -518,6 +532,7 @@ def main():
             command()
     except KeyboardInterrupt:
         error('aborting')
+
 
 if __name__ == '__main__':
     main()
